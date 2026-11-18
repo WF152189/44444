@@ -1,0 +1,8 @@
+target/
+.m2-repository/
+.idea/
+.vscode/
+*.iml
+*.log
+.DS_Store
+Thumbs.db
