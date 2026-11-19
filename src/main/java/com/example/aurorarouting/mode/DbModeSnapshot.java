@@ -4,6 +4,6 @@ public record DbModeSnapshot(
         DesiredMode desiredMode,
         DbRoute actualRoute,
         RuntimeState state,
-        int activeWriteTransactions,
+        long switchVersion,
         String lastError) {
 }

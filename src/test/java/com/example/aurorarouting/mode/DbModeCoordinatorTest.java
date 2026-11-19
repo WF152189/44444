@@ -1,70 +1,88 @@
 package com.example.aurorarouting.mode;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.time.Duration;
-import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.springframework.scheduling.concurrent.ThreadPoolTaskScheduler;
 
 class DbModeCoordinatorTest {
 
-    @Test
-    void waitsForExistingWriteBeforeSwitchingToReader() throws Exception {
-        DbModeCoordinator coordinator = new DbModeCoordinator();
-        coordinator.applyDesiredMode(DesiredMode.READ_WRITE, Duration.ofSeconds(1), () -> true);
-        coordinator.beginWriteTransaction();
+    private ThreadPoolTaskScheduler scheduler;
+    private DbModeCoordinator coordinator;
 
-        CountDownLatch finished = new CountDownLatch(1);
-        Thread switcher = new Thread(() -> {
-            coordinator.applyDesiredMode(DesiredMode.READ_ONLY, Duration.ofSeconds(2), () -> true);
-            finished.countDown();
-        });
-        switcher.start();
+    @BeforeEach
+    void setUp() {
+        scheduler = new ThreadPoolTaskScheduler();
+        scheduler.setPoolSize(1);
+        scheduler.setThreadNamePrefix("db-mode-test-");
+        scheduler.initialize();
+        coordinator = new DbModeCoordinator(scheduler);
+    }
 
-        awaitState(coordinator, RuntimeState.DRAINING);
-        assertThat(finished.await(100, TimeUnit.MILLISECONDS)).isFalse();
-
-        coordinator.endWriteTransaction();
-        assertThat(finished.await(1, TimeUnit.SECONDS)).isTrue();
-        assertThat(coordinator.snapshot().actualRoute()).isEqualTo(DbRoute.READER);
-        assertThat(coordinator.snapshot().state()).isEqualTo(RuntimeState.READY);
+    @AfterEach
+    void tearDown() {
+        scheduler.shutdown();
     }
 
     @Test
-    void rejectsNewWriteWhileDraining() throws Exception {
-        DbModeCoordinator coordinator = new DbModeCoordinator();
-        coordinator.applyDesiredMode(DesiredMode.READ_WRITE, Duration.ofSeconds(1), () -> true);
-        coordinator.beginWriteTransaction();
+    void switchesNewConnectionsToReaderImmediatelyAndBecomesReadyAfterGracePeriod()
+            throws Exception {
+        coordinator.applyDesiredMode(
+                DesiredMode.READ_WRITE, Duration.ZERO, () -> true);
 
-        Thread switcher = new Thread(() ->
-                coordinator.applyDesiredMode(DesiredMode.READ_ONLY, Duration.ofSeconds(2), () -> true));
-        switcher.start();
-        awaitState(coordinator, RuntimeState.DRAINING);
+        coordinator.applyDesiredMode(
+                DesiredMode.READ_ONLY, Duration.ofMillis(30), () -> true);
 
-        assertThatThrownBy(coordinator::beginWriteTransaction)
-                .isInstanceOf(MaintenanceModeException.class);
+        assertThat(coordinator.snapshot().actualRoute()).isEqualTo(DbRoute.READER);
+        assertThat(coordinator.snapshot().state()).isEqualTo(RuntimeState.READ_ONLY_WAITING);
 
-        coordinator.endWriteTransaction();
-        switcher.join(1000);
+        awaitState(RuntimeState.READ_ONLY_READY);
+        assertThat(coordinator.snapshot().desiredMode()).isEqualTo(DesiredMode.READ_ONLY);
+    }
+
+    @Test
+    void cancelsOldDelayedTransitionWhenFlagReturnsToReadWrite() throws Exception {
+        coordinator.applyDesiredMode(
+                DesiredMode.READ_WRITE, Duration.ZERO, () -> true);
+        coordinator.applyDesiredMode(
+                DesiredMode.READ_ONLY, Duration.ofMillis(30), () -> true);
+        coordinator.applyDesiredMode(
+                DesiredMode.READ_WRITE, Duration.ZERO, () -> true);
+
+        TimeUnit.MILLISECONDS.sleep(60);
+
+        assertThat(coordinator.snapshot().actualRoute()).isEqualTo(DbRoute.WRITER);
+        assertThat(coordinator.snapshot().state()).isEqualTo(RuntimeState.READ_WRITE_READY);
     }
 
     @Test
     void keepsReaderWhenWriterHealthCheckFails() {
-        DbModeCoordinator coordinator = new DbModeCoordinator();
-
-        coordinator.applyDesiredMode(DesiredMode.READ_WRITE, Duration.ofSeconds(1), () -> false);
+        coordinator.applyDesiredMode(
+                DesiredMode.READ_WRITE, Duration.ZERO, () -> false);
 
         assertThat(coordinator.snapshot().actualRoute()).isEqualTo(DbRoute.READER);
         assertThat(coordinator.snapshot().state()).isEqualTo(RuntimeState.ERROR);
+        assertThat(coordinator.snapshot().lastError()).isNotBlank();
     }
 
-    private static void awaitState(DbModeCoordinator coordinator, RuntimeState expected)
-            throws InterruptedException {
+    @Test
+    void firstReadOnlyPollStartsGracePeriodEvenThoughStartupRouteIsReader()
+            throws Exception {
+        coordinator.applyDesiredMode(
+                DesiredMode.READ_ONLY, Duration.ofMillis(20), () -> true);
+
+        assertThat(coordinator.snapshot().state()).isEqualTo(RuntimeState.READ_ONLY_WAITING);
+        awaitState(RuntimeState.READ_ONLY_READY);
+    }
+
+    private void awaitState(RuntimeState expected) throws InterruptedException {
         long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(1);
         while (coordinator.snapshot().state() != expected && System.nanoTime() < deadline) {
-            Thread.sleep(5);
+            TimeUnit.MILLISECONDS.sleep(5);
         }
         assertThat(coordinator.snapshot().state()).isEqualTo(expected);
     }

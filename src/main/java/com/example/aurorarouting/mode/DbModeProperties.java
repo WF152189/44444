@@ -6,6 +6,5 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 @ConfigurationProperties(prefix = "app.db-mode")
 public record DbModeProperties(
         String parameterName,
-        Duration pollInterval,
-        Duration drainTimeout) {
+        Duration gracePeriod) {
 }

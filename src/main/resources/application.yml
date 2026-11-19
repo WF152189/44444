@@ -12,7 +12,7 @@ app:
   db-mode:
     parameter-name: /myapp/prod/db-access-mode
     poll-interval: 2s
-    drain-timeout: 60s
+    grace-period: 20s
   datasource:
     writer:
       url: jdbc:mysql://YOUR_WRITER_ENDPOINT:3306/appdb

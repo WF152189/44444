@@ -46,7 +46,7 @@ public class ParameterStoreModePoller {
 
             DesiredMode requested = DesiredMode.valueOf(value);
             coordinator.applyDesiredMode(
-                    requested, properties.drainTimeout(), this::isWriterHealthy);
+                    requested, properties.gracePeriod(), this::isWriterHealthy);
         } catch (Exception e) {
             // 一次读取失败时保持当前路由，不能擅自恢复写入。
             log.error("Failed to refresh DB mode from Parameter Store", e);
